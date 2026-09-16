@@ -13,10 +13,103 @@ st.set_page_config(
     layout="wide",
 )
 
+# ---------- 全局黑白配色 ----------
 st.markdown("""
 <style>
+/* 隐藏菜单和页脚 */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
+
+/* ---------- 全局基础色 ---------- */
+html, body, [class*="css"] {
+    color: #000 !important;
+}
+.stApp {
+    background-color: #fff !important;
+}
+
+/* ---------- 所有按钮统一黑白 ---------- */
+.stButton > button,
+.stButton > button:focus,
+.stButton > button:active {
+    background-color: #fff !important;
+    color: #000 !important;
+    border: 1px solid #000 !important;
+    box-shadow: none !important;
+}
+.stButton > button:hover {
+    background-color: #000 !important;
+    color: #fff !important;
+    border: 1px solid #000 !important;
+}
+/* 主按钮也压成黑白 */
+.stButton > button[kind="primary"],
+.stButton > button[data-testid="baseButton-primary"] {
+    background-color: #000 !important;
+    color: #fff !important;
+    border: 1px solid #000 !important;
+}
+.stButton > button[kind="primary"]:hover,
+.stButton > button[data-testid="baseButton-primary"]:hover {
+    background-color: #fff !important;
+    color: #000 !important;
+}
+
+/* ---------- 提示框统一灰阶 ---------- */
+div[data-testid="stAlert"] {
+    background-color: #f5f5f5 !important;
+    color: #000 !important;
+    border: 1px solid #999 !important;
+    border-radius: 4px !important;
+}
+div[data-testid="stAlert"] * {
+    color: #000 !important;
+}
+
+/* ---------- success / info / warning / error 全部灰阶 ---------- */
+.stAlert [data-baseweb="notification"] {
+    background-color: #f5f5f5 !important;
+    color: #000 !important;
+}
+.stAlert svg {
+    fill: #000 !important;
+    color: #000 !important;
+}
+
+/* ---------- metric / caption / 标题 ---------- */
+h1, h2, h3, h4, h5, h6 {
+    color: #000 !important;
+}
+[data-testid="stMetricValue"],
+[data-testid="stMetricLabel"] {
+    color: #000 !important;
+}
+
+/* ---------- 表格 ---------- */
+[data-testid="stDataFrame"] {
+    border: 1px solid #ccc !important;
+}
+
+/* ---------- radio / 输入框 ---------- */
+input, textarea, select {
+    background-color: #fff !important;
+    color: #000 !important;
+    border: 1px solid #999 !important;
+}
+div[role="radiogroup"] label {
+    color: #000 !important;
+}
+
+/* ---------- divider ---------- */
+hr {
+    border-color: #ccc !important;
+}
+
+/* ---------- 去掉按钮阴影 / 高亮 ---------- */
+.stButton > button:focus:not(:active) {
+    border-color: #000 !important;
+    box-shadow: none !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -45,8 +138,8 @@ if not st.session_state.invited:
 # ============================================================
 # 常量
 # ============================================================
-SNAP_WINDOW = 3.0          # 正确抢盖窗口（秒）
-AI_MISFIRE_RATE = 0.004    # 每个 AI 每次刷新误盖概率
+SNAP_WINDOW = 3.0
+AI_MISFIRE_RATE = 0.004
 REFRESH_MS = 500
 
 RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
@@ -58,13 +151,6 @@ SUIT_SYMBOL = {"S": "♠", "H": "♥", "D": "♦", "C": "♣"}
 def card_to_symbol(card):
     rank, suit = card.split("-")
     return f"{rank}{SUIT_SYMBOL[suit]}"
-
-
-def card_to_html_big(card):
-    return (
-        f"<span style='color:black;font-family:Consolas,Menlo,monospace;"
-        f"font-size:48px;font-weight:bold;'>{card_to_symbol(card)}</span>"
-    )
 
 
 # ============================================================
@@ -92,16 +178,15 @@ class SnapGame:
         self.center_pile = []
         self.current_index = 0
         self.current_number = 1
-        self.phase = "playing"   # playing / snapping / finished
+        self.phase = "playing"
         self.snap_start_time = 0.0
         self.last_result = None
         self.loser_id = None
         self.next_ai_play_time = 0.0
         self.last_played_card = None
         self.last_played_number = 0
-        self.last_player_id = None   # 最后一个出牌的人
+        self.last_player_id = None
 
-    # ---------- 开局 ----------
     def start(self):
         deck = [f"{r}-{s}" for r in RANKS for s in SUITS]
         assert len(deck) == len(set(deck)), "牌堆出现重复！"
@@ -129,7 +214,6 @@ class SnapGame:
         self.last_player_id = None
         self._set_ai_timer()
 
-    # ---------- 工具 ----------
     def _set_ai_timer(self):
         seat = self.seats[self.current_index]
         if seat.is_ai:
@@ -144,19 +228,16 @@ class SnapGame:
 
     def _check_game_over(self):
         with_cards = [s for s in self.seats if s.hand]
-        # 一副牌全部出完，没人匹配 → 最后出牌的人输
         if len(with_cards) == 0:
             self.phase = "finished"
             self.loser_id = self.last_player_id
             return True
-        # 只剩一人有牌 → 他输
         if len(with_cards) == 1:
             self.phase = "finished"
             self.loser_id = with_cards[0].player_id
             return True
         return False
 
-    # ---------- 正常出牌 ----------
     def play(self):
         seat = self.seats[self.current_index]
         if not seat.hand:
@@ -171,12 +252,10 @@ class SnapGame:
         self.last_player_id = seat.player_id
         seat.last_action = f"提交 {card_to_symbol(card)}（编号 {self.current_number}）"
 
-        # 匹配 → 进入抢盖阶段
         if rank_val == self.current_number:
             self._start_snapping()
             return
 
-        # 不匹配 → 编号+1，轮到下家
         self.current_number = self.current_number % 13 + 1
 
         if self._check_game_over():
@@ -189,7 +268,6 @@ class SnapGame:
         self.current_index = nxt
         self._set_ai_timer()
 
-    # ---------- 抢盖 ----------
     def _start_snapping(self):
         self.phase = "snapping"
         self.snap_start_time = time.time()
@@ -213,7 +291,6 @@ class SnapGame:
                 s.snap_time = self.snap_start_time + s.ai_snap_delay
                 s.last_action = "已盖牌"
 
-    # ---------- 盖牌（全程可用） ----------
     def press_snap(self, player):
         if player is None or not player.hand:
             return
@@ -269,7 +346,6 @@ class SnapGame:
                 self._misfire(s)
                 return
 
-    # ---------- 结算抢盖 ----------
     def resolve_snapping(self):
         participants = [s for s in self.seats if s.hand]
         if not participants:
@@ -371,7 +447,7 @@ if game.phase == "playing":
         st.rerun()
 
 # ============================================================
-# 空格键监听（放在最前面，确保按钮已渲染后能绑定）
+# 空格键监听
 # ============================================================
 components.html(
     """
@@ -422,53 +498,43 @@ with top_b:
         st.rerun()
 
 # ============================================================
-# 公共牌区（只显示最新一张）
+# 公共牌区（只显示最新一张，低调显示）
 # ============================================================
 st.divider()
-st.subheader("待处理文件堆（公共牌区）")
 
 if game.center_pile and game.last_played_card:
-    st.markdown(
-        "<div style='text-align:center;padding:22px;background:#f0f2f6;"
-        "border-radius:10px;'>"
-        f"{card_to_html_big(game.last_played_card)}"
-        "</div>",
-        unsafe_allow_html=True,
+    st.caption(
+        f"最新记录：{card_to_symbol(game.last_played_card)}　"
+        f"（累计 {len(game.center_pile)} 条）"
     )
-    st.caption(f"牌堆总数：{len(game.center_pile)} 张")
 else:
-    st.markdown(
-        "<div style='text-align:center;padding:22px;color:gray;"
-        "background:#f0f2f6;border-radius:10px;'>暂无文件</div>",
-        unsafe_allow_html=True,
-    )
+    st.caption("最新记录：—")
 
 # ============================================================
-# 状态区
+# 状态区（低调显示）
 # ============================================================
-st.divider()
-
 me = game.seats[0]
+
+phase_map = {"playing": "进行中", "snapping": "同步中", "finished": "已归档"}
 
 c1, c2, c3, c4 = st.columns(4)
 
 with c1:
-    st.metric("当前编号", game.current_number)
+    st.caption(f"当前编号：**{game.current_number}**")
 
 with c2:
     if game.phase == "playing":
-        st.metric("当前操作人", game.seats[game.current_index].player_id)
+        st.caption(f"当前操作：**{game.seats[game.current_index].player_id}**")
     elif game.phase == "snapping":
-        st.metric("当前操作人", "⚡ 全体抢盖")
+        st.caption("当前操作：**全员确认**")
     else:
-        st.metric("当前操作人", "—")
+        st.caption("当前操作：—")
 
 with c3:
-    phase_map = {"playing": "进行中", "snapping": "抢盖", "finished": "已结束"}
-    st.metric("阶段", phase_map.get(game.phase, game.phase))
+    st.caption(f"阶段：**{phase_map.get(game.phase, game.phase)}**")
 
 with c4:
-    st.metric("我的剩余手牌", f"{len(me.hand)} 张")
+    st.caption(f"我的剩余：**{len(me.hand)} 张**")
 
 # ============================================================
 # 操作按钮
