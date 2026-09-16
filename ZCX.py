@@ -44,7 +44,9 @@ if not st.session_state.invited:
 # ============================================================
 # 常量
 # ============================================================
-SNAP_WINDOW = 3.0  # 抢盖窗口（秒）
+SNAP_WINDOW = 3.0          # 正确抢盖窗口（秒）
+AI_MISFIRE_RATE = 0.004    # 每个 AI 每次刷新误盖概率
+REFRESH_MS = 500
 
 RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
 SUITS = ["S", "H", "D", "C"]
@@ -76,11 +78,11 @@ class SnapPlayer:
     snap_pressed: bool = False
     snap_time: float = 0.0
     ai_snap_delay: float = 0.0
+    last_action: str = ""
 
 
 class SnapGame:
     def __init__(self, num_players: int):
-        # seat 0 是人类
         self.seats = [SnapPlayer(player_id="我")]
         ai_names = ["A001", "A002", "A003"]
         for i in range(num_players - 1):
@@ -90,11 +92,13 @@ class SnapGame:
         self.center_pile = []
         self.current_index = 0
         self.current_number = 1
-        self.phase = "playing"  # playing / snapping / finished
+        self.phase = "playing"   # playing / snapping / finished
         self.snap_start_time = 0.0
         self.last_result = None
         self.loser_id = None
         self.next_ai_play_time = 0.0
+        self.last_played_card = None
+        self.last_played_number = 0
 
     # ---------- 开局 ----------
     def start(self):
@@ -107,6 +111,7 @@ class SnapGame:
             p.snap_pressed = False
             p.snap_time = 0.0
             p.ai_snap_delay = 0.0
+            p.last_action = ""
 
         for i, c in enumerate(deck):
             self.seats[i % n].hand.append(c)
@@ -117,6 +122,8 @@ class SnapGame:
         self.phase = "playing"
         self.last_result = None
         self.loser_id = None
+        self.last_played_card = None
+        self.last_played_number = 0
         self._set_ai_timer()
 
     # ---------- 工具 ----------
@@ -140,7 +147,7 @@ class SnapGame:
             return True
         return False
 
-    # ---------- 出牌 ----------
+    # ---------- 正常出牌 ----------
     def play(self):
         seat = self.seats[self.current_index]
         if not seat.hand:
@@ -150,11 +157,16 @@ class SnapGame:
         self.center_pile.append(card)
         rank_val = RANK_VALUE[card.split("-")[0]]
 
+        self.last_played_card = card
+        self.last_played_number = self.current_number
+        seat.last_action = f"提交 {card_to_symbol(card)}（编号 {self.current_number}）"
+
+        # 匹配 → 进入抢盖阶段
         if rank_val == self.current_number:
             self._start_snapping()
             return
 
-        # 不匹配：编号 +1，轮到下家
+        # 不匹配 → 编号+1，轮到下家
         self.current_number = self.current_number % 13 + 1
 
         if self._check_game_over():
@@ -175,13 +187,12 @@ class SnapGame:
             s.snap_pressed = False
             s.snap_time = 0.0
             if s.is_ai and s.hand:
-                # AI 在窗口内随机时刻按下（0.4 ~ 2.7 秒）
+                # AI 反应时间：0.4 ~ 2.7 秒
                 s.ai_snap_delay = random.uniform(0.4, SNAP_WINDOW - 0.3)
             else:
                 s.ai_snap_delay = 0.0
 
     def update_snapping(self):
-        """每次刷新时调用：让到点的 AI 自动按下。"""
         if self.phase != "snapping":
             return
         elapsed = time.time() - self.snap_start_time
@@ -191,14 +202,74 @@ class SnapGame:
             if elapsed >= s.ai_snap_delay:
                 s.snap_pressed = True
                 s.snap_time = self.snap_start_time + s.ai_snap_delay
+                s.last_action = "已盖牌"
 
-    def try_human_snap(self):
-        me = self.seats[0]
-        if me.snap_pressed or not me.hand:
+    # ---------- 盖牌（全程可用） ----------
+    def press_snap(self, player):
+        """
+        任何时刻都能按盖牌：
+        - 抢盖阶段按 → 正常计时
+        - 平时按 → 误盖，直接拿走中央全部牌
+        """
+        if player is None or not player.hand:
             return
-        me.snap_pressed = True
-        me.snap_time = time.time()
 
+        if self.phase == "snapping":
+            if player.snap_pressed:
+                return
+            player.snap_pressed = True
+            player.snap_time = time.time()
+            player.last_action = "已盖牌"
+            return
+
+        if self.phase == "playing":
+            self._misfire(player)
+
+    def _misfire(self, player):
+        """误盖惩罚：拿走中央所有牌。"""
+        if not self.center_pile:
+            player.last_action = "误盖（中央为空）"
+            return
+
+        taken = list(self.center_pile)
+        player.hand.extend(taken)
+        self.center_pile = []
+        self.last_result = {
+            "loser_id": player.player_id,
+            "taken_count": len(taken),
+            "reason": "misfire",
+            "timestamp": time.time(),
+        }
+        self.loser_id = player.player_id
+        player.last_action = f"误盖，带走 {len(taken)} 张"
+
+        if self._check_game_over():
+            return
+
+        # 不改变当前回合，游戏继续
+        # 若当前玩家已没牌，跳到下家
+        if not self.seats[self.current_index].hand:
+            nxt = self._next_player_with_cards(self.current_index)
+            if nxt < 0:
+                self.phase = "finished"
+                return
+            self.current_index = nxt
+        self._set_ai_timer()
+
+    def update_ai_misfire(self):
+        """AI 偶尔会手痒误盖。"""
+        if self.phase != "playing":
+            return
+        for s in self.seats:
+            if not s.is_ai or not s.hand:
+                continue
+            if not self.center_pile:
+                continue
+            if random.random() < AI_MISFIRE_RATE:
+                self._misfire(s)
+                return
+
+    # ---------- 结算抢盖 ----------
     def resolve_snapping(self):
         participants = [s for s in self.seats if s.hand]
         if not participants:
@@ -220,6 +291,7 @@ class SnapGame:
         self.last_result = {
             "loser_id": slowest.player_id,
             "taken_count": len(taken),
+            "reason": "slowest",
             "timestamp": time.time(),
         }
         self.loser_id = slowest.player_id
@@ -231,7 +303,7 @@ class SnapGame:
         if self._check_game_over():
             return
 
-        loser_idx = next(i for i, s in enumerate(self.seats) if s is slowest)
+        loser_idx = self.seats.index(slowest)
         self.current_number = 1
         self.phase = "playing"
 
@@ -246,8 +318,8 @@ class SnapGame:
 # ============================================================
 # 自动刷新
 # ============================================================
-if "game" in st.session_state and st.session_state.game is not None:
-    st_autorefresh(interval=500, key="refresh")
+if st.session_state.get("game") is not None:
+    st_autorefresh(interval=REFRESH_MS, key="refresh")
 
 # ============================================================
 # 开始设置
@@ -266,6 +338,7 @@ if st.session_state.game is None:
     )
 
     st.caption("你固定坐在 1 号位，其余为 AI 模拟账户。")
+    st.caption("盖牌按钮全程可用——对上了再按，按错要罚。")
 
     if st.button("开始游戏", type="primary", use_container_width=True):
         g = SnapGame(n)
@@ -280,10 +353,10 @@ game = st.session_state.game
 # ============================================================
 # 每帧逻辑更新
 # ============================================================
-# 1) 更新 AI 抢盖
 game.update_snapping()
+game.update_ai_misfire()
 
-# 2) 抢盖窗口结算
+# 抢盖窗口结算
 if game.phase == "snapping":
     elapsed = time.time() - game.snap_start_time
     participants = [s for s in game.seats if s.hand]
@@ -292,7 +365,7 @@ if game.phase == "snapping":
         game.resolve_snapping()
         st.rerun()
 
-# 3) AI 自动出牌
+# AI 自动出牌
 if game.phase == "playing":
     seat = game.seats[game.current_index]
     if seat.is_ai and time.time() >= game.next_ai_play_time:
@@ -358,6 +431,9 @@ with c3:
 # ============================================================
 st.divider()
 
+me = game.seats[0]
+
+# 出牌按钮（只在轮到你时出现）
 if game.phase == "playing":
     if game.current_index == 0:
         st.success("轮到你出牌")
@@ -367,29 +443,43 @@ if game.phase == "playing":
     else:
         st.info(f"等待 {game.seats[game.current_index].player_id} 出牌...")
 
-elif game.phase == "snapping":
+# 抢盖倒计时提示
+if game.phase == "snapping":
     elapsed = time.time() - game.snap_start_time
     remaining = max(0.0, SNAP_WINDOW - elapsed)
     st.error(f"⚡ 编号匹配！全体抢盖！剩余 {remaining:.1f} 秒")
-
-    me = game.seats[0]
     if me.snap_pressed:
         speed = me.snap_time - game.snap_start_time
         st.success(f"你已盖牌 ✓（{speed:.2f} 秒）")
-    else:
-        if st.button("✋ 盖牌！", key="snap_btn", use_container_width=True, type="primary"):
-            game.try_human_snap()
-            st.rerun()
+
+# ============================================================
+# 盖牌按钮 —— 全程可用
+# ============================================================
+st.markdown("#### 盖牌操作")
+st.caption("⚠️ 注意：数字没对上时按下去，会直接拿走中央全部文件。")
+
+snap_disabled = (not me.hand)
+snap_label = "✋ 盖牌！"
+if st.button(snap_label, key="snap_btn", use_container_width=True,
+             type="primary", disabled=snap_disabled):
+    game.press_snap(me)
+    st.rerun()
 
 # ============================================================
 # 最近结算提示
 # ============================================================
 if game.last_result:
     if time.time() - game.last_result["timestamp"] < 8:
-        st.warning(
-            f"⚠️ **{game.last_result['loser_id']}** 反应最慢，"
-            f"带走中央 {game.last_result['taken_count']} 张文件"
-        )
+        if game.last_result.get("reason") == "misfire":
+            st.error(
+                f"❌ **{game.last_result['loser_id']}** 误盖！"
+                f"带走中央 {game.last_result['taken_count']} 张文件"
+            )
+        else:
+            st.warning(
+                f"⚠️ **{game.last_result['loser_id']}** 反应最慢，"
+                f"带走中央 {game.last_result['taken_count']} 张文件"
+            )
 
 # ============================================================
 # 玩家列表
@@ -415,6 +505,7 @@ for i, s in enumerate(game.seats):
         "标识": s.player_id + marker,
         "手牌数": len(s.hand),
         "状态": status,
+        "最近动作": s.last_action or "—",
     })
 
 st.dataframe(table_data, use_container_width=True, hide_index=True)
