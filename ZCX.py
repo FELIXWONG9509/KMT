@@ -3,6 +3,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from streamlit_autorefresh import st_autorefresh
+import streamlit.components.v1 as components
 
 # ============================================================
 # 页面伪装配置
@@ -59,11 +60,10 @@ def card_to_symbol(card):
     return f"{rank}{SUIT_SYMBOL[suit]}"
 
 
-def cards_to_html(cards, gap="  "):
-    inner = gap.join(card_to_symbol(c) for c in cards)
+def card_to_html_big(card):
     return (
         f"<span style='color:black;font-family:Consolas,Menlo,monospace;"
-        f"font-size:22px;'>{inner}</span>"
+        f"font-size:48px;font-weight:bold;'>{card_to_symbol(card)}</span>"
     )
 
 
@@ -99,10 +99,12 @@ class SnapGame:
         self.next_ai_play_time = 0.0
         self.last_played_card = None
         self.last_played_number = 0
+        self.last_player_id = None   # 最后一个出牌的人
 
     # ---------- 开局 ----------
     def start(self):
         deck = [f"{r}-{s}" for r in RANKS for s in SUITS]
+        assert len(deck) == len(set(deck)), "牌堆出现重复！"
         random.shuffle(deck)
         n = len(self.seats)
 
@@ -124,6 +126,7 @@ class SnapGame:
         self.loser_id = None
         self.last_played_card = None
         self.last_played_number = 0
+        self.last_player_id = None
         self._set_ai_timer()
 
     # ---------- 工具 ----------
@@ -141,9 +144,15 @@ class SnapGame:
 
     def _check_game_over(self):
         with_cards = [s for s in self.seats if s.hand]
-        if len(with_cards) <= 1:
+        # 一副牌全部出完，没人匹配 → 最后出牌的人输
+        if len(with_cards) == 0:
             self.phase = "finished"
-            self.loser_id = with_cards[0].player_id if with_cards else None
+            self.loser_id = self.last_player_id
+            return True
+        # 只剩一人有牌 → 他输
+        if len(with_cards) == 1:
+            self.phase = "finished"
+            self.loser_id = with_cards[0].player_id
             return True
         return False
 
@@ -159,6 +168,7 @@ class SnapGame:
 
         self.last_played_card = card
         self.last_played_number = self.current_number
+        self.last_player_id = seat.player_id
         seat.last_action = f"提交 {card_to_symbol(card)}（编号 {self.current_number}）"
 
         # 匹配 → 进入抢盖阶段
@@ -187,7 +197,6 @@ class SnapGame:
             s.snap_pressed = False
             s.snap_time = 0.0
             if s.is_ai and s.hand:
-                # AI 反应时间：0.4 ~ 2.7 秒
                 s.ai_snap_delay = random.uniform(0.4, SNAP_WINDOW - 0.3)
             else:
                 s.ai_snap_delay = 0.0
@@ -206,11 +215,6 @@ class SnapGame:
 
     # ---------- 盖牌（全程可用） ----------
     def press_snap(self, player):
-        """
-        任何时刻都能按盖牌：
-        - 抢盖阶段按 → 正常计时
-        - 平时按 → 误盖，直接拿走中央全部牌
-        """
         if player is None or not player.hand:
             return
 
@@ -226,7 +230,6 @@ class SnapGame:
             self._misfire(player)
 
     def _misfire(self, player):
-        """误盖惩罚：拿走中央所有牌。"""
         if not self.center_pile:
             player.last_action = "误盖（中央为空）"
             return
@@ -246,8 +249,6 @@ class SnapGame:
         if self._check_game_over():
             return
 
-        # 不改变当前回合，游戏继续
-        # 若当前玩家已没牌，跳到下家
         if not self.seats[self.current_index].hand:
             nxt = self._next_player_with_cards(self.current_index)
             if nxt < 0:
@@ -257,13 +258,12 @@ class SnapGame:
         self._set_ai_timer()
 
     def update_ai_misfire(self):
-        """AI 偶尔会手痒误盖。"""
         if self.phase != "playing":
+            return
+        if not self.center_pile:
             return
         for s in self.seats:
             if not s.is_ai or not s.hand:
-                continue
-            if not self.center_pile:
                 continue
             if random.random() < AI_MISFIRE_RATE:
                 self._misfire(s)
@@ -338,7 +338,7 @@ if st.session_state.game is None:
     )
 
     st.caption("你固定坐在 1 号位，其余为 AI 模拟账户。")
-    st.caption("盖牌按钮全程可用——对上了再按，按错要罚。")
+    st.caption("盖牌按钮全程可用——对上了再按，按错要罚。空格键也可以盖牌。")
 
     if st.button("开始游戏", type="primary", use_container_width=True):
         g = SnapGame(n)
@@ -356,7 +356,6 @@ game = st.session_state.game
 game.update_snapping()
 game.update_ai_misfire()
 
-# 抢盖窗口结算
 if game.phase == "snapping":
     elapsed = time.time() - game.snap_start_time
     participants = [s for s in game.seats if s.hand]
@@ -365,12 +364,51 @@ if game.phase == "snapping":
         game.resolve_snapping()
         st.rerun()
 
-# AI 自动出牌
 if game.phase == "playing":
     seat = game.seats[game.current_index]
     if seat.is_ai and time.time() >= game.next_ai_play_time:
         game.play()
         st.rerun()
+
+# ============================================================
+# 空格键监听（放在最前面，确保按钮已渲染后能绑定）
+# ============================================================
+components.html(
+    """
+    <script>
+    (function() {
+        function clickSnap() {
+            try {
+                var doc = window.parent.document;
+                var buttons = doc.querySelectorAll('button');
+                for (var i = 0; i < buttons.length; i++) {
+                    var txt = buttons[i].innerText || '';
+                    if (txt.indexOf('盖牌') !== -1 && !buttons[i].disabled) {
+                        buttons[i].click();
+                        return true;
+                    }
+                }
+            } catch (e) {}
+            return false;
+        }
+        function onKey(e) {
+            if (e.code === 'Space' || e.key === ' ' || e.keyCode === 32) {
+                var t = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+                if (t === 'input' || t === 'textarea' || t === 'select') return;
+                e.preventDefault();
+                e.stopPropagation();
+                clickSnap();
+            }
+        }
+        if (!window.parent.__snapKeyBound) {
+            window.parent.__snapKeyBound = true;
+            window.parent.document.addEventListener('keydown', onKey, true);
+        }
+    })();
+    </script>
+    """,
+    height=0,
+)
 
 # ============================================================
 # 顶部信息
@@ -384,20 +422,20 @@ with top_b:
         st.rerun()
 
 # ============================================================
-# 公共牌区
+# 公共牌区（只显示最新一张）
 # ============================================================
 st.divider()
 st.subheader("待处理文件堆（公共牌区）")
 
-if game.center_pile:
-    recent = game.center_pile[-15:]
+if game.center_pile and game.last_played_card:
     st.markdown(
         "<div style='text-align:center;padding:22px;background:#f0f2f6;"
         "border-radius:10px;'>"
-        f"{cards_to_html(recent)}</div>",
+        f"{card_to_html_big(game.last_played_card)}"
+        "</div>",
         unsafe_allow_html=True,
     )
-    st.caption(f"堆中共 {len(game.center_pile)} 张文件")
+    st.caption(f"牌堆总数：{len(game.center_pile)} 张")
 else:
     st.markdown(
         "<div style='text-align:center;padding:22px;color:gray;"
@@ -409,7 +447,10 @@ else:
 # 状态区
 # ============================================================
 st.divider()
-c1, c2, c3 = st.columns(3)
+
+me = game.seats[0]
+
+c1, c2, c3, c4 = st.columns(4)
 
 with c1:
     st.metric("当前编号", game.current_number)
@@ -426,14 +467,14 @@ with c3:
     phase_map = {"playing": "进行中", "snapping": "抢盖", "finished": "已结束"}
     st.metric("阶段", phase_map.get(game.phase, game.phase))
 
+with c4:
+    st.metric("我的剩余手牌", f"{len(me.hand)} 张")
+
 # ============================================================
 # 操作按钮
 # ============================================================
 st.divider()
 
-me = game.seats[0]
-
-# 出牌按钮（只在轮到你时出现）
 if game.phase == "playing":
     if game.current_index == 0:
         st.success("轮到你出牌")
@@ -443,11 +484,10 @@ if game.phase == "playing":
     else:
         st.info(f"等待 {game.seats[game.current_index].player_id} 出牌...")
 
-# 抢盖倒计时提示
 if game.phase == "snapping":
     elapsed = time.time() - game.snap_start_time
     remaining = max(0.0, SNAP_WINDOW - elapsed)
-    st.error(f"⚡ 编号匹配！全体抢盖！剩余 {remaining:.1f} 秒")
+    st.error(f"⚡ 编号匹配！全体抢盖！剩余 {remaining:.1f} 秒（可按空格键）")
     if me.snap_pressed:
         speed = me.snap_time - game.snap_start_time
         st.success(f"你已盖牌 ✓（{speed:.2f} 秒）")
@@ -456,11 +496,10 @@ if game.phase == "snapping":
 # 盖牌按钮 —— 全程可用
 # ============================================================
 st.markdown("#### 盖牌操作")
-st.caption("⚠️ 注意：数字没对上时按下去，会直接拿走中央全部文件。")
+st.caption("⚠️ 数字没对上时按下去，会直接拿走中央全部文件。也可以直接按空格键。")
 
 snap_disabled = (not me.hand)
-snap_label = "✋ 盖牌！"
-if st.button(snap_label, key="snap_btn", use_container_width=True,
+if st.button("✋ 盖牌！（空格）", key="snap_btn", use_container_width=True,
              type="primary", disabled=snap_disabled):
     game.press_snap(me)
     st.rerun()
@@ -516,7 +555,9 @@ st.dataframe(table_data, use_container_width=True, hide_index=True)
 if game.phase == "finished":
     st.divider()
     if game.loser_id:
-        st.error(f"🏁 游戏结束！**{game.loser_id}** 手里最后还有牌，是最终输家！")
+        st.error(f"🏁 游戏结束！**{game.loser_id}** 是最终输家！")
+        if game.loser_id == game.last_player_id and all(not s.hand for s in game.seats):
+            st.caption("（一副牌已全部出完，仍无人匹配，最后出牌者判负）")
     else:
         st.error("🏁 游戏结束！")
 
