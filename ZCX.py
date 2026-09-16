@@ -13,46 +13,41 @@ st.set_page_config(
     layout="wide",
 )
 
-# ---------- 全局黑白配色 ----------
 st.markdown("""
 <style>
-/* 隐藏菜单和页脚 */
 #MainMenu {visibility: hidden;}
 footer {visibility: hidden;}
 
-/* ---------- 全局基础色 ---------- */
-html, body, [class*="css"] {
-    color: #000 !important;
-}
-.stApp {
-    background-color: #fff !important;
-}
+html, body, [class*="css"] { color: #000 !important; }
+.stApp { background-color: #fff !important; }
 
-/* ---------- 所有按钮统一黑白 ---------- */
+/* ---------- 所有按钮统一白底黑字黑边框 ---------- */
 .stButton > button,
 .stButton > button:focus,
-.stButton > button:active {
+.stButton > button:active,
+.stButton > button[kind="primary"],
+.stButton > button[kind="secondary"],
+.stButton > button[data-testid="baseButton-primary"],
+.stButton > button[data-testid="baseButton-secondary"] {
     background-color: #fff !important;
     color: #000 !important;
     border: 1px solid #000 !important;
     box-shadow: none !important;
 }
-.stButton > button:hover {
-    background-color: #000 !important;
-    color: #fff !important;
-    border: 1px solid #000 !important;
-}
-/* 主按钮也压成黑白 */
-.stButton > button[kind="primary"],
-.stButton > button[data-testid="baseButton-primary"] {
-    background-color: #000 !important;
-    color: #fff !important;
-    border: 1px solid #000 !important;
-}
+.stButton > button:hover,
 .stButton > button[kind="primary"]:hover,
-.stButton > button[data-testid="baseButton-primary"]:hover {
-    background-color: #fff !important;
+.stButton > button[kind="secondary"]:hover,
+.stButton > button[data-testid="baseButton-primary"]:hover,
+.stButton > button[data-testid="baseButton-secondary"]:hover {
+    background-color: #f0f0f0 !important;
     color: #000 !important;
+    border: 1px solid #000 !important;
+}
+.stButton > button:disabled,
+.stButton > button:disabled:hover {
+    background-color: #f5f5f5 !important;
+    color: #999 !important;
+    border: 1px solid #ccc !important;
 }
 
 /* ---------- 提示框统一灰阶 ---------- */
@@ -62,54 +57,18 @@ div[data-testid="stAlert"] {
     border: 1px solid #999 !important;
     border-radius: 4px !important;
 }
-div[data-testid="stAlert"] * {
-    color: #000 !important;
-}
+div[data-testid="stAlert"] * { color: #000 !important; }
+.stAlert svg { fill: #000 !important; color: #000 !important; }
 
-/* ---------- success / info / warning / error 全部灰阶 ---------- */
-.stAlert [data-baseweb="notification"] {
-    background-color: #f5f5f5 !important;
-    color: #000 !important;
-}
-.stAlert svg {
-    fill: #000 !important;
-    color: #000 !important;
-}
+h1, h2, h3, h4, h5, h6 { color: #000 !important; }
 
-/* ---------- metric / caption / 标题 ---------- */
-h1, h2, h3, h4, h5, h6 {
-    color: #000 !important;
-}
-[data-testid="stMetricValue"],
-[data-testid="stMetricLabel"] {
-    color: #000 !important;
-}
-
-/* ---------- 表格 ---------- */
-[data-testid="stDataFrame"] {
-    border: 1px solid #ccc !important;
-}
-
-/* ---------- radio / 输入框 ---------- */
 input, textarea, select {
     background-color: #fff !important;
     color: #000 !important;
     border: 1px solid #999 !important;
 }
-div[role="radiogroup"] label {
-    color: #000 !important;
-}
-
-/* ---------- divider ---------- */
-hr {
-    border-color: #ccc !important;
-}
-
-/* ---------- 去掉按钮阴影 / 高亮 ---------- */
-.stButton > button:focus:not(:active) {
-    border-color: #000 !important;
-    box-shadow: none !important;
-}
+div[role="radiogroup"] label { color: #000 !important; }
+hr { border-color: #ccc !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -138,7 +97,9 @@ if not st.session_state.invited:
 # ============================================================
 # 常量
 # ============================================================
-SNAP_WINDOW = 3.0
+AI_MIN_DELAY = 0.4
+AI_MAX_DELAY = 2.5
+HUMAN_TIMEOUT = 5.0
 AI_MISFIRE_RATE = 0.004
 REFRESH_MS = 500
 
@@ -275,7 +236,7 @@ class SnapGame:
             s.snap_pressed = False
             s.snap_time = 0.0
             if s.is_ai and s.hand:
-                s.ai_snap_delay = random.uniform(0.4, SNAP_WINDOW - 0.3)
+                s.ai_snap_delay = random.uniform(AI_MIN_DELAY, AI_MAX_DELAY)
             else:
                 s.ai_snap_delay = 0.0
 
@@ -289,7 +250,7 @@ class SnapGame:
             if elapsed >= s.ai_snap_delay:
                 s.snap_pressed = True
                 s.snap_time = self.snap_start_time + s.ai_snap_delay
-                s.last_action = "已盖牌"
+                s.last_action = "已确认"
 
     def press_snap(self, player):
         if player is None or not player.hand:
@@ -300,7 +261,7 @@ class SnapGame:
                 return
             player.snap_pressed = True
             player.snap_time = time.time()
-            player.last_action = "已盖牌"
+            player.last_action = "已确认"
             return
 
         if self.phase == "playing":
@@ -308,7 +269,7 @@ class SnapGame:
 
     def _misfire(self, player):
         if not self.center_pile:
-            player.last_action = "误盖（中央为空）"
+            player.last_action = "误确认（中央为空）"
             return
 
         taken = list(self.center_pile)
@@ -321,7 +282,7 @@ class SnapGame:
             "timestamp": time.time(),
         }
         self.loser_id = player.player_id
-        player.last_action = f"误盖，带走 {len(taken)} 张"
+        player.last_action = f"误确认，带走 {len(taken)} 张"
 
         if self._check_game_over():
             return
@@ -416,7 +377,7 @@ if st.session_state.game is None:
     st.caption("你固定坐在 1 号位，其余为 AI 模拟账户。")
     st.caption("盖牌按钮全程可用——对上了再按，按错要罚。空格键也可以盖牌。")
 
-    if st.button("开始游戏", type="primary", use_container_width=True):
+    if st.button("开始游戏", use_container_width=True):
         g = SnapGame(n)
         g.start()
         st.session_state.game = g
@@ -436,7 +397,20 @@ if game.phase == "snapping":
     elapsed = time.time() - game.snap_start_time
     participants = [s for s in game.seats if s.hand]
     all_snapped = len(participants) > 0 and all(s.snap_pressed for s in participants)
-    if elapsed >= SNAP_WINDOW or all_snapped:
+
+    ai_waiting = any(s.is_ai and s.hand and not s.snap_pressed for s in game.seats)
+    human = game.seats[0]
+    human_waiting = bool(human.hand) and not human.snap_pressed
+
+    should_resolve = False
+    if all_snapped:
+        should_resolve = True
+    elif not ai_waiting and not human_waiting:
+        should_resolve = True
+    elif elapsed >= HUMAN_TIMEOUT:
+        should_resolve = True
+
+    if should_resolve:
         game.resolve_snapping()
         st.rerun()
 
@@ -493,7 +467,7 @@ top_a, top_b = st.columns([4, 1])
 with top_a:
     st.caption("单人模拟模式（对方为 AI 账户）")
 with top_b:
-    if st.button("← 返回设置", key="back_to_setup"):
+    if st.button("返回设置", key="back_to_setup"):
         st.session_state.game = None
         st.rerun()
 
@@ -537,36 +511,40 @@ with c4:
     st.caption(f"我的剩余：**{len(me.hand)} 张**")
 
 # ============================================================
-# 操作按钮
+# 操作按钮（出牌按钮始终渲染，仅置灰）
 # ============================================================
 st.divider()
 
 if game.phase == "playing":
     if game.current_index == 0:
         st.success("轮到你出牌")
-        if st.button("📤 出牌", key="play_btn", use_container_width=True, type="primary"):
-            game.play()
-            st.rerun()
     else:
         st.info(f"等待 {game.seats[game.current_index].player_id} 出牌...")
-
-if game.phase == "snapping":
+elif game.phase == "snapping":
     elapsed = time.time() - game.snap_start_time
-    remaining = max(0.0, SNAP_WINDOW - elapsed)
-    st.error(f"⚡ 编号匹配！全体抢盖！剩余 {remaining:.1f} 秒（可按空格键）")
+    remaining = max(0.0, HUMAN_TIMEOUT - elapsed)
+    st.error(f"编号匹配！全体确认，剩余 {remaining:.1f} 秒（可按空格键）")
     if me.snap_pressed:
         speed = me.snap_time - game.snap_start_time
-        st.success(f"你已盖牌 ✓（{speed:.2f} 秒）")
+        st.success(f"你已确认（{speed:.2f} 秒）")
+else:
+    st.caption("")
+
+# ---------- 出牌按钮：位置固定 ----------
+play_disabled = not (game.phase == "playing" and game.current_index == 0)
+if st.button("出牌", key="play_btn", use_container_width=True, disabled=play_disabled):
+    game.play()
+    st.rerun()
 
 # ============================================================
 # 盖牌按钮 —— 全程可用
 # ============================================================
 st.markdown("#### 盖牌操作")
-st.caption("⚠️ 数字没对上时按下去，会直接拿走中央全部文件。也可以直接按空格键。")
+st.caption("数字没对上时按下去，会直接拿走中央全部文件。也可以直接按空格键。")
 
 snap_disabled = (not me.hand)
-if st.button("✋ 盖牌！（空格）", key="snap_btn", use_container_width=True,
-             type="primary", disabled=snap_disabled):
+if st.button("盖牌（空格）", key="snap_btn", use_container_width=True,
+             disabled=snap_disabled):
     game.press_snap(me)
     st.rerun()
 
@@ -577,12 +555,12 @@ if game.last_result:
     if time.time() - game.last_result["timestamp"] < 8:
         if game.last_result.get("reason") == "misfire":
             st.error(
-                f"❌ **{game.last_result['loser_id']}** 误盖！"
+                f"**{game.last_result['loser_id']}** 误确认，"
                 f"带走中央 {game.last_result['taken_count']} 张文件"
             )
         else:
             st.warning(
-                f"⚠️ **{game.last_result['loser_id']}** 反应最慢，"
+                f"**{game.last_result['loser_id']}** 反应最慢，"
                 f"带走中央 {game.last_result['taken_count']} 张文件"
             )
 
@@ -594,14 +572,14 @@ st.subheader("当前情况")
 
 table_data = []
 for i, s in enumerate(game.seats):
-    marker = " ◀" if i == 0 else ""
+    marker = "（我）" if i == 0 else ""
     if game.phase == "snapping" and s.snap_pressed:
         speed = s.snap_time - game.snap_start_time
-        status = f"已盖牌 ({speed:.2f}s)"
+        status = f"已确认 ({speed:.2f}s)"
     elif game.phase == "playing" and i == game.current_index:
         status = "待出牌"
     elif not s.hand:
-        status = "已完成 ✓"
+        status = "已完成"
     else:
         status = "等待中"
 
@@ -621,12 +599,12 @@ st.dataframe(table_data, use_container_width=True, hide_index=True)
 if game.phase == "finished":
     st.divider()
     if game.loser_id:
-        st.error(f"🏁 游戏结束！**{game.loser_id}** 是最终输家！")
+        st.error(f"游戏结束，**{game.loser_id}** 是最终输家。")
         if game.loser_id == game.last_player_id and all(not s.hand for s in game.seats):
             st.caption("（一副牌已全部出完，仍无人匹配，最后出牌者判负）")
     else:
-        st.error("🏁 游戏结束！")
+        st.error("游戏结束。")
 
-    if st.button("🔄 再来一局", use_container_width=True, type="primary"):
+    if st.button("再来一局", use_container_width=True):
         st.session_state.game = None
         st.rerun()
