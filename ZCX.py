@@ -60,6 +60,13 @@ div[data-testid="stAlert"] {
 div[data-testid="stAlert"] * { color: #000 !important; }
 .stAlert svg { fill: #000 !important; color: #000 !important; }
 
+/* ---------- 抢盖阶段专用提示：加粗黑框 ---------- */
+div[data-testid="stAlert"].snap-alert {
+    background-color: #fff !important;
+    border: 2px solid #000 !important;
+    font-weight: bold !important;
+}
+
 h1, h2, h3, h4, h5, h6 { color: #000 !important; }
 
 input, textarea, select {
@@ -99,7 +106,8 @@ if not st.session_state.invited:
 # ============================================================
 AI_MIN_DELAY = 0.4
 AI_MAX_DELAY = 2.5
-HUMAN_TIMEOUT = 5.0
+HUMAN_TIMEOUT = 10.0        # 人类总时限（秒）
+RESOLVE_GRACE = 2.0         # 结算后的宽限期，避免延迟点击被判误盖
 AI_MISFIRE_RATE = 0.004
 REFRESH_MS = 500
 
@@ -141,6 +149,7 @@ class SnapGame:
         self.current_number = 1
         self.phase = "playing"
         self.snap_start_time = 0.0
+        self.last_snap_resolve_time = 0.0   # 上一次抢盖结算的时间
         self.last_result = None
         self.loser_id = None
         self.next_ai_play_time = 0.0
@@ -168,6 +177,7 @@ class SnapGame:
         self.current_number = 1
         self.current_index = random.randrange(n)
         self.phase = "playing"
+        self.last_snap_resolve_time = 0.0
         self.last_result = None
         self.loser_id = None
         self.last_played_card = None
@@ -265,6 +275,9 @@ class SnapGame:
             return
 
         if self.phase == "playing":
+            # 宽限期：如果 2 秒内刚结算过抢盖，这次点击视为延迟点击，忽略
+            if time.time() - self.last_snap_resolve_time < RESOLVE_GRACE:
+                return
             self._misfire(player)
 
     def _misfire(self, player):
@@ -325,6 +338,7 @@ class SnapGame:
         slowest.hand.extend(taken)
         self.center_pile = []
 
+        self.last_snap_resolve_time = time.time()   # 记录结算时间
         self.last_result = {
             "loser_id": slowest.player_id,
             "taken_count": len(taken),
@@ -393,6 +407,7 @@ game = st.session_state.game
 game.update_snapping()
 game.update_ai_misfire()
 
+# ---------- 抢盖结算 ----------
 if game.phase == "snapping":
     elapsed = time.time() - game.snap_start_time
     participants = [s for s in game.seats if s.hand]
@@ -523,10 +538,17 @@ if game.phase == "playing":
 elif game.phase == "snapping":
     elapsed = time.time() - game.snap_start_time
     remaining = max(0.0, HUMAN_TIMEOUT - elapsed)
-    st.error(f"编号匹配！全体确认，剩余 {remaining:.1f} 秒（可按空格键）")
+    # 抢盖专用提示，加粗黑框
+    st.markdown(
+        f"<div style='border:2px solid #000; padding:12px; text-align:center; "
+        f"font-weight:bold; font-size:16px; background:#fff; color:#000;'>"
+        f"编号匹配！全体确认，剩余 {remaining:.1f} 秒（可按空格键）"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
     if me.snap_pressed:
         speed = me.snap_time - game.snap_start_time
-        st.success(f"你已确认（{speed:.2f} 秒）")
+        st.caption(f"你已确认（{speed:.2f} 秒）")
 else:
     st.caption("")
 
